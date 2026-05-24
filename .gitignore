@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+cookies*.txt
+cookies*.json
+debug_*.png
+test_*.py
+*_test.py
+output/
+.claude/
+collected_*.json
