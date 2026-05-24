@@ -217,43 +217,52 @@ def extract_from_api(aweme_data: dict) -> tuple[str, str, int] | None:
     return None
 
 
-def download_video(url: str, filepath: str, quiet: bool = False):
-    """下载视频文件"""
-    resp = requests.get(
-        url,
-        headers={**HEADERS, "Range": "bytes=0-"},
-        stream=True,
-        timeout=120,
-    )
-    resp.raise_for_status()
-
-    total = int(resp.headers.get("content-length", 0))
-    downloaded = 0
-
-    with open(filepath, "wb") as f:
-        for chunk in resp.iter_content(chunk_size=1024 * 1024):
-            if chunk:
-                f.write(chunk)
-                downloaded += len(chunk)
-                if total and not quiet:
-                    pct = downloaded / total * 100
-                    mb = downloaded / (1024 * 1024)
-                    total_mb = total / (1024 * 1024)
-                    print(
-                        f"\r  下载进度: {mb:.1f}/{total_mb:.1f} MB ({pct:.0f}%)",
-                        end="",
-                        flush=True,
-                    )
-
-    if total and not quiet:
-        print()
-    if not quiet:
+def download_video(url: str, filepath: str, quiet: bool = False, max_retries: int = 3):
+    """下载视频文件，失败自动重试"""
+    last_error = None
+    for attempt in range(max_retries):
         try:
-            print(f"  已保存: {filepath} ({downloaded / (1024*1024):.1f} MB)")
-        except UnicodeEncodeError:
-            safe_name = Path(filepath).name.encode("ascii", errors="replace").decode("ascii")
-            print(f"  已保存: {safe_name} ({downloaded / (1024*1024):.1f} MB)")
-    return downloaded
+            resp = requests.get(
+                url,
+                headers={**HEADERS, "Range": "bytes=0-"},
+                stream=True,
+                timeout=120,
+            )
+            resp.raise_for_status()
+
+            total = int(resp.headers.get("content-length", 0))
+            downloaded = 0
+
+            with open(filepath, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if total and not quiet:
+                            pct = downloaded / total * 100
+                            mb = downloaded / (1024 * 1024)
+                            total_mb = total / (1024 * 1024)
+                            print(
+                                f"\r  下载进度: {mb:.1f}/{total_mb:.1f} MB ({pct:.0f}%)",
+                                end="",
+                                flush=True,
+                            )
+
+            if total and not quiet:
+                print()
+            if not quiet:
+                try:
+                    print(f"  已保存: {filepath} ({downloaded / (1024*1024):.1f} MB)")
+                except UnicodeEncodeError:
+                    safe_name = Path(filepath).name.encode("ascii", errors="replace").decode("ascii")
+                    print(f"  已保存: {safe_name} ({downloaded / (1024*1024):.1f} MB)")
+            return downloaded
+        except Exception as e:
+            last_error = e
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+
+    raise last_error
 
 
 def main():

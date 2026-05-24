@@ -6,6 +6,7 @@
 import json
 import re
 import sys
+import time
 import requests
 from pathlib import Path
 
@@ -96,21 +97,23 @@ def build_note_dirname(title: str, create_time: int) -> str:
     return sanitize_filename(title)
 
 
-def download_image(url: str, filepath: str) -> int:
-    """下载单张图片。先尝试去 ~tplv 后缀获取无水印原图，失败则用原 URL。"""
-    # 去掉 ~tplv 后缀拿到可能无水印的原始图片 URL
+def download_image(url: str, filepath: str, max_retries: int = 3) -> int:
+    """下载单张图片，先尝试去 ~tplv 获取无水印原图，失败自动重试。"""
     clean_url = re.sub(r'~tplv-[^?&]+', '', url)
     urls_to_try = [clean_url, url] if clean_url != url else [url]
 
-    for u in urls_to_try:
-        try:
-            resp = requests.get(u, headers=HEADERS, timeout=60)
-            resp.raise_for_status()
-            with open(filepath, "wb") as f:
-                f.write(resp.content)
-            return len(resp.content)
-        except Exception:
-            continue
+    for attempt in range(max_retries):
+        for u in urls_to_try:
+            try:
+                resp = requests.get(u, headers=HEADERS, timeout=60)
+                resp.raise_for_status()
+                with open(filepath, "wb") as f:
+                    f.write(resp.content)
+                return len(resp.content)
+            except Exception:
+                continue
+        if attempt < max_retries - 1:
+            time.sleep(2 ** attempt)
 
     raise RuntimeError(f"所有 URL 均下载失败: {filepath}")
 
@@ -159,6 +162,68 @@ def download_note(note: dict, output_dir: str, lock: threading.Lock, stats: dict
         return False
 
 
+def run_notes_download(
+    notes_list: list,
+    output_dir: str,
+    threads: int = 8,
+    max_count: int = 0,
+) -> dict:
+    """批量下载图集。返回统计信息，包含 failed_ids 列表。"""
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    notes = list(notes_list)
+    if max_count:
+        notes = notes[:max_count]
+
+    print(f"共 {len(notes)} 个图片合集待下载")
+    print(f"输出目录: {output_dir}/")
+    print()
+
+    # 单浏览器收集全部图集信息
+    print("正在收集图集信息...")
+    notes = fetch_all_notes(notes)
+    valid = sum(1 for n in notes if n.get("images"))
+    print(f"收集完成: {valid}/{len(notes)} 个图集有图片\n")
+
+    lock = threading.Lock()
+    stats = {"success": 0, "fail": 0}
+    failed_ids = []
+
+    workers = max(1, min(threads, len(notes)))
+    print(f"使用 {workers} 个线程并行下载...\n")
+
+    # 用 wrapper 捕获失败 ID
+    def download_one(note: dict) -> bool:
+        result = download_note(note, str(output_path), lock, stats)
+        if not result:
+            with lock:
+                failed_ids.append(note["id"])
+        return result
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = [executor.submit(download_one, note) for note in notes]
+        for _ in as_completed(futures):
+            pass
+
+    # 写失败 ID 列表
+    if failed_ids:
+        failed_file = output_path / "failed_notes.txt"
+        with open(failed_file, "w", encoding="utf-8") as f:
+            for nid in failed_ids:
+                f.write(f"{nid}\n")
+        print(f"\n失败 ID 已写入: {failed_file}")
+
+    print()
+    print("=" * 50)
+    print("图集下载完成!")
+    print(f"  成功: {stats['success']} 个")
+    print(f"  失败: {stats['fail']} 个")
+    print(f"  保存至: {output_path.resolve()}/")
+
+    return {"success": stats["success"], "fail": stats["fail"], "failed_ids": failed_ids}
+
+
 def main():
     args = sys.argv[1:]
     if not args:
@@ -190,41 +255,7 @@ def main():
     with open(notes_file, encoding="utf-8") as f:
         notes = json.load(f)
 
-    if max_count:
-        notes = notes[:max_count]
-
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
-
-    print(f"共 {len(notes)} 个图片合集待下载")
-    print(f"输出目录: {output_dir}/")
-    print()
-
-    # 单浏览器收集全部图集信息（比每个图集启动一次浏览器快得多且线程安全）
-    print("正在收集图集信息...")
-    notes = fetch_all_notes(notes)
-    valid = sum(1 for n in notes if n.get("images"))
-    print(f"收集完成: {valid}/{len(notes)} 个图集有图片\n")
-
-    lock = threading.Lock()
-    stats = {"success": 0, "fail": 0}
-
-    workers = max(1, min(threads, len(notes)))
-    print(f"使用 {workers} 个线程并行下载...\n")
-
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = [
-            executor.submit(download_note, note, output_dir, lock, stats)
-            for note in notes
-        ]
-        for _ in as_completed(futures):
-            pass
-
-    print()
-    print("=" * 50)
-    print("图集下载完成!")
-    print(f"  成功: {stats['success']} 个")
-    print(f"  失败: {stats['fail']} 个")
-    print(f"  保存至: {Path(output_dir).resolve()}/")
+    run_notes_download(notes, output_dir, threads, max_count)
 
 
 if __name__ == "__main__":
