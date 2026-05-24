@@ -12,82 +12,77 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 
-from douyin_downloader import HEADERS, sanitize_filename, clean_title, fmt_date
+from douyin_downloader import (
+    HEADERS, sanitize_filename, clean_title, fmt_date, launch_browser,
+)
 
 
-def fetch_note_page(note_id: str) -> tuple[list[str], str, int]:
-    """
-    通过 detail API 获取图集原图 URL、标题和发布时间。
-    不再从 DOM 抓取（画质差且慢），直接从 API 提取 download_url_list。
-    """
+def fetch_all_notes(notes: list[dict]) -> list[dict]:
+    """使用单个浏览器实例为所有图集获取图片 URL 和元数据，避免每个图集启动一次浏览器"""
     from playwright.sync_api import sync_playwright
 
-    page_url = f"https://www.douyin.com/note/{note_id}"
-
     with sync_playwright() as p:
-        try:
-            browser = p.chromium.launch(channel="chrome", headless=True)
-        except Exception:
-            try:
-                browser = p.chromium.launch(channel="msedge", headless=True)
-            except Exception:
-                browser = p.chromium.launch(headless=True)
-
+        browser = launch_browser(p)
         context = browser.new_context(
             user_agent=HEADERS["User-Agent"],
             viewport={"width": 1920, "height": 1080},
         )
         page = context.new_page()
 
-        page.goto(page_url, wait_until="domcontentloaded", timeout=30000)
+        # 先导航到抖音建立 domain 上下文，后续 API 调用共享同一来源
+        page.goto("https://www.douyin.com", wait_until="domcontentloaded", timeout=30000)
 
-        # 通过 SPA fetch 调用 detail API，提取无水印原图 URL
-        api_raw = page.evaluate(f"""
-            async () => {{
-                try {{
-                    const resp = await fetch(
-                        'https://www.douyin.com/aweme/v1/web/aweme/detail/?aweme_id={note_id}&device_platform=webapp&aid=6383&channel=channel_pc_web',
-                        {{ credentials: 'include', headers: {{ 'Accept': 'application/json' }} }}
-                    );
-                    const data = await resp.json();
-                    if (data.aweme_detail) {{
-                        const ad = data.aweme_detail;
-                        const imageUrls = [];
-                        if (ad.images && ad.images.length) {{
-                            ad.images.forEach(img => {{
-                                // 用 url_list（p3-sign 域名，无需复杂鉴权），
-                                // 去掉 ~tplv 后缀尝试获取无水印原图
-                                let url = (img.url_list && img.url_list[0]) || '';
-                                if (!url) {{
-                                    url = (img.download_url_list && img.download_url_list[0]) || '';
-                                }}
-                                if (url) imageUrls.push(url);
+        enriched = []
+        for i, note in enumerate(notes):
+            note_id = note["id"]
+            print(f"\r  收集图集信息... [{i+1}/{len(notes)}] {note_id}", end="", flush=True)
+
+            api_raw = page.evaluate(f"""
+                async () => {{
+                    try {{
+                        const resp = await fetch(
+                            'https://www.douyin.com/aweme/v1/web/aweme/detail/?aweme_id={note_id}&device_platform=webapp&aid=6383&channel=channel_pc_web',
+                            {{ credentials: 'include', headers: {{ 'Accept': 'application/json' }} }}
+                        );
+                        const data = await resp.json();
+                        if (data.aweme_detail) {{
+                            const ad = data.aweme_detail;
+                            const imageUrls = [];
+                            if (ad.images && ad.images.length) {{
+                                ad.images.forEach(img => {{
+                                    let url = (img.url_list && img.url_list[0]) || '';
+                                    if (!url) {{
+                                        url = (img.download_url_list && img.download_url_list[0]) || '';
+                                    }}
+                                    if (url) imageUrls.push(url);
+                                }});
+                            }}
+                            return JSON.stringify({{
+                                desc: ad.desc || '',
+                                create_time: ad.create_time || 0,
+                                images: imageUrls
                             }});
                         }}
-                        return JSON.stringify({{
-                            desc: ad.desc || '',
-                            create_time: ad.create_time || 0,
-                            images: imageUrls
-                        }});
-                    }}
-                }} catch(e) {{}}
-                return null;
-            }}
-        """)
+                    }} catch(e) {{}}
+                    return null;
+                }}
+            """)
 
+            if api_raw:
+                data = json.loads(api_raw)
+                enriched.append({
+                    "id": note_id,
+                    "title": data.get("desc", "douyin_note"),
+                    "create_time": data.get("create_time", 0),
+                    "images": data.get("images", []),
+                })
+            else:
+                enriched.append({**note, "images": [], "title": note.get("title", "douyin_note"), "create_time": note.get("create_time", 0)})
+
+        print()  # 换行结束进度行
         browser.close()
 
-    if api_raw:
-        data = json.loads(api_raw)
-        img_urls = data.get("images", [])
-        title = sanitize_filename(data.get("desc", "douyin_note"))
-        create_time = data.get("create_time", 0)
-    else:
-        img_urls = []
-        title = "douyin_note"
-        create_time = 0
-
-    return img_urls, title, create_time
+    return enriched
 
 
 def build_note_dirname(title: str, create_time: int) -> str:
@@ -121,11 +116,13 @@ def download_image(url: str, filepath: str) -> int:
 
 
 def download_note(note: dict, output_dir: str, lock: threading.Lock, stats: dict) -> bool:
-    """下载单个图集的所有图片到文件夹"""
+    """下载单个图集的所有图片到文件夹（不再启动浏览器，使用已收集的数据）"""
     note_id = note["id"]
 
     try:
-        img_urls, title, create_time = fetch_note_page(note_id)
+        img_urls = note.get("images", [])
+        title = note.get("title", "douyin_note")
+        create_time = note.get("create_time", 0)
 
         if not img_urls:
             with lock:
@@ -174,34 +171,39 @@ def main():
     notes_file = args[0]
     output_dir = "output"
     threads = 8
-    max_notes = 0
+    max_count = 0
 
-    skip = False
+    skip_next = False
     for i, arg in enumerate(args[1:], start=1):
-        if skip:
-            skip = False
+        if skip_next:
+            skip_next = False
             continue
         if arg == "--threads" and i + 1 < len(args):
             threads = int(args[i + 1])
-            skip = True
+            skip_next = True
         elif arg == "--max" and i + 1 < len(args):
-            max_notes = int(args[i + 1])
-            skip = True
+            max_count = int(args[i + 1])
+            skip_next = True
         elif not arg.startswith("--"):
             output_dir = arg
 
     with open(notes_file, encoding="utf-8") as f:
         notes = json.load(f)
 
-    if max_notes:
-        notes = notes[:max_notes]
+    if max_count:
+        notes = notes[:max_count]
 
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
     print(f"共 {len(notes)} 个图片合集待下载")
     print(f"输出目录: {output_dir}/")
-    print(f"线程数: {threads}")
     print()
+
+    # 单浏览器收集全部图集信息（比每个图集启动一次浏览器快得多且线程安全）
+    print("正在收集图集信息...")
+    notes = fetch_all_notes(notes)
+    valid = sum(1 for n in notes if n.get("images"))
+    print(f"收集完成: {valid}/{len(notes)} 个图集有图片\n")
 
     lock = threading.Lock()
     stats = {"success": 0, "fail": 0}

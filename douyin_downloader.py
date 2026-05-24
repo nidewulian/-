@@ -76,16 +76,14 @@ def build_filename(title: str, create_time: int = 0) -> str:
     return sanitize_filename(f'{title}.mp4')
 
 
-def launch_browser():
-    """启动系统浏览器"""
-    with sync_playwright() as p:
-        for channel in ["chrome", "msedge", None]:
-            try:
-                browser = p.chromium.launch(channel=channel, headless=True)
-                return p, browser
-            except Exception:
-                continue
-        raise RuntimeError("无法启动任何浏览器")
+def launch_browser(p):
+    """在已有 playwright 实例中启动 Chromium 浏览器，自动尝试 chrome/msedge/内置"""
+    for channel in ["chrome", "msedge", None]:
+        try:
+            return p.chromium.launch(channel=channel, headless=True)
+        except Exception:
+            continue
+    raise RuntimeError("无法启动任何浏览器")
 
 
 def fetch_video_page(video_id: str):
@@ -96,13 +94,7 @@ def fetch_video_page(video_id: str):
     page_url = f"https://www.douyin.com/video/{video_id}"
 
     with sync_playwright() as p:
-        try:
-            browser = p.chromium.launch(channel="chrome", headless=True)
-        except Exception:
-            try:
-                browser = p.chromium.launch(channel="msedge", headless=True)
-            except Exception:
-                browser = p.chromium.launch(headless=True)
+        browser = launch_browser(p)
 
         context = browser.new_context(
             user_agent=HEADERS["User-Agent"],
