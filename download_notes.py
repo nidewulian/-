@@ -97,8 +97,8 @@ def build_note_dirname(title: str, create_time: int) -> str:
     return sanitize_filename(title)
 
 
-def download_image(url: str, filepath: str, max_retries: int = 3) -> int:
-    """下载单张图片，先尝试去 ~tplv 获取无水印原图，失败自动重试。"""
+def download_image(url: str, folder: Path, index: int, max_retries: int = 3) -> int:
+    """下载单张图片到指定文件夹，根据 Content-Type 确定扩展名。返回文件大小。"""
     clean_url = re.sub(r'~tplv-[^?&]+', '', url)
     urls_to_try = [clean_url, url] if clean_url != url else [url]
 
@@ -107,6 +107,17 @@ def download_image(url: str, filepath: str, max_retries: int = 3) -> int:
             try:
                 resp = requests.get(u, headers=HEADERS, timeout=60)
                 resp.raise_for_status()
+
+                content_type = resp.headers.get("Content-Type", "")
+                if "webp" in content_type:
+                    ext = ".webp"
+                elif "png" in content_type:
+                    ext = ".png"
+                else:
+                    ext = ".jpg"
+
+                filename = f"{index:02d}{ext}"
+                filepath = folder / filename
                 with open(filepath, "wb") as f:
                     f.write(resp.content)
                 return len(resp.content)
@@ -115,7 +126,7 @@ def download_image(url: str, filepath: str, max_retries: int = 3) -> int:
         if attempt < max_retries - 1:
             time.sleep(2 ** attempt)
 
-    raise RuntimeError(f"所有 URL 均下载失败: {filepath}")
+    raise RuntimeError(f"所有 URL 均下载失败: {folder.name}/{index:02d}")
 
 
 def download_note(note: dict, output_dir: str, lock: threading.Lock, stats: dict) -> bool:
@@ -139,15 +150,11 @@ def download_note(note: dict, output_dir: str, lock: threading.Lock, stats: dict
 
         # 下载所有图片
         for i, url in enumerate(img_urls, start=1):
-            ext = ".webp" if "webp" in url.split("?")[0].lower() else ".jpg"
-            filename = f"{i:02d}{ext}"
-            filepath = folder / filename
-
-            # 跳过已下载
-            if filepath.exists():
+            # 跳过已下载（任意扩展名）
+            if list(folder.glob(f"{i:02d}.*")):
                 continue
 
-            download_image(url, str(filepath))
+            download_image(url, folder, i)
 
         with lock:
             stats["success"] += 1

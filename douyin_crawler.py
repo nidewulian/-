@@ -13,16 +13,10 @@
 """
 
 import json
-import re
 import sys
 from pathlib import Path
 
-
-def extract_sec_uid(url: str) -> str:
-    m = re.search(r"/user/([^/?&]+)", url)
-    if m:
-        return m.group(1)
-    raise ValueError(f"无法从 URL 提取用户 ID: {url}")
+from douyin_downloader import extract_sec_uid
 
 
 def main():

@@ -12,15 +12,7 @@ import threading
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from douyin_downloader import (
-    HEADERS,
-    extract_from_api,
-    extract_from_html,
-    fetch_video_page,
-    download_video,
-    sanitize_filename,
-    build_filename,
-)
+from douyin_downloader import download_video, build_filename
 
 
 def run_batch_download(
@@ -101,20 +93,12 @@ def run_batch_download(
 
         try:
             if not video_url:
-                html, aweme_data = fetch_video_page(video_id)
-                result = None
-                if aweme_data:
-                    result = extract_from_api(aweme_data)
-                if not result:
-                    result = extract_from_html(html)
-                if not result:
-                    with lock:
-                        stats["fail"] += 1
-                        failed_ids.append(video_id)
-                        done_count += 1
-                        print(f"[{done_count}/{total_pending}] {video_id}  失败: 未能提取视频地址")
-                    return
-                video_url, title, api_create_time = result if len(result) == 3 else (*result, 0)
+                with lock:
+                    stats["fail"] += 1
+                    failed_ids.append(video_id)
+                    done_count += 1
+                    print(f"[{done_count}/{total_pending}] {video_id}  失败: 缺少视频 URL（收集阶段未获取）")
+                return
 
             create_time = item.get("create_time", 0)
             filename = build_filename(title, create_time)

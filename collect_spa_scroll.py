@@ -30,18 +30,12 @@ import json
 import time
 from pathlib import Path
 
-
-def extract_sec_uid(url: str) -> str:
-    m = re.search(r"/user/([^/?&]+)", url)
-    if m:
-        return m.group(1)
-    raise ValueError(f"无法从URL中提取用户ID: {url}")
+from douyin_downloader import extract_sec_uid
 
 
 def collect_via_cdp(
     sec_uid: str,
     cdp_port: int = 9222,
-    max_videos: int = 0,
 ) -> tuple[list[dict], list[dict]]:
     """
     CDP 模式主流程：
@@ -66,7 +60,7 @@ def collect_via_cdp(
             print(f"  1. 登录 douyin.com")
             print(f"  2. 打开目标用户主页（{url}）")
             print(f"\n最后重新运行本脚本。")
-            return []
+            return [], []
 
         context = browser.contexts[0]
         print("  已连接")
@@ -241,11 +235,7 @@ def main():
         print(f"最大收集: {max_videos} 个")
     print()
 
-    videos, notes = collect_via_cdp(
-        sec_uid,
-        cdp_port=cdp_port,
-        max_videos=max_videos,
-    )
+    videos, notes = collect_via_cdp(sec_uid, cdp_port=cdp_port)
 
     if not videos and not notes:
         print("\n未收集到任何视频或图集。")

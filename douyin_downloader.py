@@ -33,6 +33,13 @@ def extract_video_id(url: str) -> str:
     raise ValueError(f"无法从URL中提取视频ID: {url}")
 
 
+def extract_sec_uid(url: str) -> str:
+    m = re.search(r"/user/([^/?&]+)", url)
+    if m:
+        return m.group(1)
+    raise ValueError(f"无法从URL中提取用户ID: {url}")
+
+
 def sanitize_filename(name: str) -> str:
     """清理文件名，去除非法字符"""
     name = re.sub(r'[\n\r\t]', ' ', name)
@@ -88,7 +95,7 @@ def launch_browser(p):
 
 def fetch_video_page(video_id: str):
     """
-    打开抖音视频页，同时监听 API 响应和收集 HTML
+    打开抖音视频页，通过 expect_response 事件驱动捕获 API 响应。
     返回 (html, aweme_data)
     """
     page_url = f"https://www.douyin.com/video/{video_id}"
@@ -102,32 +109,25 @@ def fetch_video_page(video_id: str):
         )
         page = context.new_page()
 
-        aweme_data = []
+        aweme_data = None
+        try:
+            with page.expect_response(
+                lambda resp: "/aweme/v1/web/aweme/detail/" in resp.url,
+                timeout=15000,
+            ) as resp_info:
+                page.goto(page_url, wait_until="domcontentloaded", timeout=30000)
 
-        def on_response(response):
-            if (
-                "/aweme/v1/web/aweme/detail/" in response.url
-                and response.status == 200
-            ):
-                try:
-                    body = response.text()
-                    if body and "aweme_detail" in body:
-                        aweme_data.append(json.loads(body))
-                except Exception:
-                    pass
-
-        page.on("response", on_response)
-        page.goto(page_url, wait_until="domcontentloaded", timeout=30000)
-
-        for _ in range(15):
-            if aweme_data:
-                break
-            time.sleep(1)
+            response = resp_info.value
+            body = response.text()
+            if body and "aweme_detail" in body:
+                aweme_data = json.loads(body)
+        except Exception:
+            pass
 
         html = page.content()
         browser.close()
 
-        return html, aweme_data[0] if aweme_data else None
+        return html, aweme_data
 
 
 def extract_from_html(html: str) -> tuple[str, str] | None:
