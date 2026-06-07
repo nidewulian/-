@@ -51,7 +51,7 @@ def collect_via_cdp(
         # ======== 连接 Chrome ========
         print(f"连接 Chrome (端口 {cdp_port})...")
         try:
-            browser = p.chromium.connect_over_cdp(f"http://localhost:{cdp_port}")
+            browser = p.chromium.connect_over_cdp(f"http://127.0.0.1:{cdp_port}")
         except Exception as e:
             print(f"\n[错误] 无法连接到 Chrome: {e}")
             print(f"\n请先启动 Chrome 并开启调试端口：")
